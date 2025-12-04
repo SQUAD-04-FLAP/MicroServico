@@ -6,6 +6,8 @@ Esse microserviço facilita a comunicação e conexão entre dois ou mais client
 
 Todo o projeto é desenvolvido em TypeScript e compilado para JavaScript.
 
+Utilize o comando ``npm install`` para instalar todas as dependências.
+
 Em ambiente de desenvolvimento utilize o comando ``npm run start:dev``.
 
 Quando quiser compilar para rodar em ambiente de produção ou homologação utilize esse comando ``npm run build``. A saída da compilação vai para a pasta ``dist``.

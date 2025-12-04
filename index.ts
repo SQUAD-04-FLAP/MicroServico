@@ -1,75 +1,101 @@
 import express from 'express';
 import http from 'http';
-import { Server } from 'socket.io';
-import { DEFAULT_PROJECT } from './data';
+import { Server, Socket } from 'socket.io';
 
 const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "*", // adicionar o endereço de producao
+    origin: "*", // em produção, alterar para o domínio do apache
     methods: ["GET", "POST"],
   },
 });
 
-const roomsData: Record<string, any> = {};
+interface Room {
+  data: any; // armazenae o JSON inteiro, não defini um modelo especifico já que isso escala demais
+  clients: Set<string>; // armazena IDs dos clientes
+}
 
-io.on('connection', (socket) => {
-  console.log('cliente conectado', socket.id);
+// armazenamento em memória
+const rooms: Record<string, Room> = {};
 
-  socket.on('joinRoom', (room: string, ack?: (proj: any) => void) => {
-    socket.join(room);
-    console.log(`${socket.id} entrou na sala ${room}`);
+io.on("connection", (socket: Socket) => {
+  console.log(`Cliente conectado: ${socket.id}`);
 
-    if (!roomsData[room]) {
-      roomsData[room] = { ...DEFAULT_PROJECT };
+  // cliente pode criar sala
+  socket.on("create-room", (roomId: string, callback: (response: any) => void) => {
+    if (rooms[roomId]) {
+      return callback({ ok: false, error: "Sala já existe" });
     }
 
-    const proj = roomsData[room];
-
-    socket.emit('project', proj);
-
-    if (ack) ack(proj);
+    // cria a sala com JSON vazio inicial, garante mutabilidade e zero bug inicial
+    rooms[roomId] = {
+      data: {}, 
+      clients: new Set()
+    };
+    
+    console.log(`Sala criada: ${roomId}`);
+    callback({ ok: true, message: "Sala criada com sucesso" });
   });
 
-  socket.on('updateProject', (payload: { room: string; project: any }) => {
-    const { room, project } = payload;
-    roomsData[room] = project;
-
-    console.log(`projeto da sala ${room} atualizado`);
-
-    socket.to(room).emit('project', project);
+  // cliente pode checar as salas existentes para se conectar
+  socket.on("list-rooms", (callback: (rooms: string[]) => void) => {
+    const activeRooms = Object.keys(rooms);
+    callback(activeRooms);
   });
 
-  socket.on('getProject', (room: string, ack?: (proj?: any) => void) => {
-    ack && ack(roomsData[room]);
-  });
+  // cliente pode entrar em uma sala existe depois de checar
+  socket.on("join-room", (roomId: string, callback: (response: any) => void) => {
+    const room = rooms[roomId];
 
-  socket.on('disconnecting', () => {
-    for (const room of socket.rooms) {
-      if (room !== socket.id) {
-        console.log(`${socket.id} saiu da sala ${room}`);
-      }
+    if (!room) {
+      return callback({ ok: false, error: "Sala não existe" });
     }
+
+    socket.join(roomId);
+    room.clients.add(socket.id);
+    
+    console.log(`Socket ${socket.id} entrou na sala ${roomId}`);
+
+    // retorna os dados atuais da sala para quem acabou de entrar
+    callback({ ok: true, data: room.data });
   });
 
-  socket.on('disconnect', () => {
-    console.log('cliente desconectado', socket.id);
+  // os dados trocados são JSONs inteiros armazenados, sem interferir com o fluxo principal
+  socket.on("update-room", (roomId: string, fullJson: any) => {
+    const room = rooms[roomId];
+    if (!room) return;
 
-    for (const room of socket.rooms) {
-      if (room !== socket.id) {
-        const roomInfo = io.sockets.adapter.rooms.get(room);
-        if (!roomInfo || roomInfo.size === 0) {
-          console.log(`sala ${room} está vazia agora`);
-          delete roomsData[room];
+    // atualiza a memória do servidor
+    room.data = fullJson;
+
+    // envia para todos na sala (broadcast), menos quem enviou, sem isso gera bug
+    socket.to(roomId).emit("room-data", fullJson);
+    
+  });
+
+  // quando a sala não tiver mais ninguém, fecha e apaga da memória
+  socket.on("disconnect", () => {
+    console.log(`Cliente desconectado: ${socket.id}`);
+
+    // verifica todas as salas para remover este usuário
+    for (const roomId of Object.keys(rooms)) {
+      const room = rooms[roomId];
+
+      if (room.clients.has(socket.id)) {
+        room.clients.delete(socket.id);
+        
+        // se a sala ficou vazia, deleta da memória
+        if (room.clients.size === 0) {
+          delete rooms[roomId];
+          console.log(`Sala ${roomId} foi fechada (está vazia).`);
         }
       }
     }
   });
 });
 
-const PORT = 3000;
-server.listen(PORT, () => {
-  console.log(`Servidor rodando em http://localhost:${PORT}`);
+server.listen(3000, () => {
+  console.log("🚀 Servidor WebSocket rodando na porta 3000");
 });
